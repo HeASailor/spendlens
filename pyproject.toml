@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spendlens"
+version = "0.1.0"
+description = "Procurement spend analytics in one command: duplicate suppliers, tail spend, maverick spend and savings, as a single HTML report."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Himanshu Chaudhary" }]
+keywords = ["procurement", "spend-analysis", "source-to-pay", "supply-chain", "analytics"]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+spendlens = "spendlens.cli:main"
+
+[tool.setuptools]
+packages = ["spendlens"]
