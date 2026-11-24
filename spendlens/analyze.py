@@ -8,6 +8,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
+from .classify import classify_rows
+from .variance import has_price_columns, price_variance
+
 REQUIRED = {"supplier", "amount"}
 LEGAL_SUFFIXES = {
     "pvt", "ltd", "private", "limited", "inc", "incorporated", "llc", "llp",
@@ -19,6 +22,7 @@ DEFAULT_ASSUMPTIONS = {
     "tail_consolidation": 0.08,   # savings on tail spend moved to preferred suppliers
     "maverick_to_po": 0.05,       # savings from routing off-PO spend through PO + contract
     "duplicate_merge": 0.03,      # volume leverage from merging duplicate supplier records
+    "price_harmonisation": 0.40,  # share of the gap to the best price already paid that you close
 }
 
 
@@ -48,6 +52,13 @@ class Analysis:
     duplicate_spend: float = 0.0
     savings: dict = field(default_factory=dict)
     savings_total: float = 0.0
+    classification: dict = field(default_factory=dict)      # source -> {rows, spend}
+    classified_pct: float = 0.0                              # spend with a category after auto-classify
+    auto_classified_pct: float = 0.0                         # spend whose category SpendLens filled in
+    review_rows: list = field(default_factory=list)          # low-confidence guesses worth a look
+    price_items: list = field(default_factory=list)          # ItemVariance, biggest gap first
+    price_gap_total: float = 0.0
+    price_covered_pct: float = 0.0
 
 
 def load(path: str) -> list[dict]:
@@ -115,7 +126,8 @@ def cluster_suppliers(names: list[str], threshold: float = 0.88) -> list[list[st
 
 
 def analyze(rows: list[dict], assumptions: dict | None = None,
-            fuzzy_threshold: float = 0.88) -> Analysis:
+            fuzzy_threshold: float = 0.88, classify: bool = True,
+            min_confidence: float = 0.0) -> Analysis:
     a = Analysis()
     assume = {**DEFAULT_ASSUMPTIONS, **(assumptions or {})}
     if not rows:
@@ -145,6 +157,17 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
     a.duplicate_spend = sum(c[2] for c in a.duplicate_clusters)
     a.unique_suppliers = len(spend_by_supplier)
 
+    # --- category auto-classification (fills blanks only, never overwrites)
+    if classify:
+        a.classification = classify_rows(rows, canon_of, min_confidence=min_confidence)
+        filled = a.classification["keyword"]["spend"] + a.classification["supplier"]["spend"]
+        a.auto_classified_pct = filled / a.total_spend * 100
+        a.classified_pct = 100 - a.classification["none"]["spend"] / a.total_spend * 100
+        a.review_rows = sorted(
+            (r for r in rows if r["category_source"] != "given" and r["category"]
+             and r["category_conf"] < 0.65),
+            key=lambda r: -r["amount"])[:6]
+
     # --- pareto + tail
     ranked = sorted(spend_by_supplier.items(), key=lambda kv: -kv[1])
     cum = 0.0
@@ -169,7 +192,7 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
         a.maverick_pct = a.maverick_spend / a.total_spend * 100
 
     # --- payment terms
-    terms = [(r["amount"], r.get("payment_terms_days", "")) for r in rows]
+    terms = [(r["amount"], str(r.get("payment_terms_days", ""))) for r in rows]
     valid = [(amt, int(t)) for amt, t in terms if t.isdigit()]
     if valid:
         tot = sum(x for x, _ in valid)
@@ -195,11 +218,19 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
             mo[d[:7]] += r["amount"]
     a.monthly = sorted(mo.items())
 
+    # --- price variance across suppliers for the same item
+    if has_price_columns(rows):
+        a.price_items, covered = price_variance(rows, canon_of)
+        a.price_gap_total = sum(i.gap_value for i in a.price_items)
+        a.price_covered_pct = covered / a.total_spend * 100
+
     # --- savings (illustrative)
     a.savings = {
         "Tail spend consolidation": a.tail_spend * assume["tail_consolidation"],
         "Maverick spend onto PO/contract": a.maverick_spend * assume["maverick_to_po"],
         "Duplicate supplier merge": a.duplicate_spend * assume["duplicate_merge"],
     }
+    if a.price_items:
+        a.savings["Price harmonisation"] = a.price_gap_total * assume["price_harmonisation"]
     a.savings_total = sum(a.savings.values())
     return a
