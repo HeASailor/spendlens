@@ -58,7 +58,7 @@ TAXONOMY: dict[str, dict[str, int]] = {
     },
     "Marketing": {
         "marketing": 3, "media": 3, "agency": 2, "advertis": 3, "creative": 2, "brand": 3,
-        "campaign": 3, "pr ": 1, "seo": 3, "design": 1, "print": 2, "event": 2, "promotion": 3,
+        "campaign": 3, "pr": 1, "seo": 3, "design": 1, "print": 2, "event": 2, "promotion": 3,
         "studio": 2, "social": 1, "sponsor": 3, "pixel": 1,
     },
 }
@@ -116,11 +116,13 @@ def row_text(row: dict) -> str:
 
 
 def classify_rows(rows: list[dict], canon_of: dict[str, str] | None = None,
-                  overwrite: bool = False, min_confidence: float = 0.0) -> dict:
+                  overwrite: bool = False, min_confidence: float = 0.0,
+                  taxonomy: dict[str, dict[str, int]] | None = None) -> dict:
     """Fill missing categories in place. Returns coverage stats (spend and row counts).
 
     Sets on every row: `category`, `category_source` (given | keyword | supplier | none)
-    and `category_conf` (1.0 for given values).
+    and `category_conf` (1.0 for given values). Pass `taxonomy` to use your own category
+    list (see spendlens.taxonomy); the built-in one is used otherwise.
     """
     canon_of = canon_of or {}
     # pass 1: keep given categories, keyword-score the rest
@@ -129,7 +131,7 @@ def classify_rows(rows: list[dict], canon_of: dict[str, str] | None = None,
         if given and not overwrite:
             r["category"], r["category_source"], r["category_conf"] = given, "given", 1.0
             continue
-        cat, conf = classify_text(row_text(r))
+        cat, conf = classify_text(row_text(r), taxonomy)
         if cat and conf >= min_confidence:
             r["category"], r["category_source"], r["category_conf"] = cat, "keyword", conf
         else:

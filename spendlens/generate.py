@@ -74,6 +74,17 @@ ITEMS = {
     ],
 }
 
+# Invented annual price drift per item, applied smoothly across the year so the trend view has
+# something to find. Items not listed drift by DEFAULT_DRIFT.
+DEFAULT_DRIFT = 0.02
+ITEM_DRIFT = {
+    "Cold rolled steel coil": 0.14, "Copper wire rod": 0.19, "Polypropylene granules": 0.07,
+    "Industrial solvent IPA": -0.06, "Container shipping 40ft": -0.12, "Full truckload freight": 0.09,
+    "Corrugated carton 5-ply": 0.11, "Stretch film 500mm": 0.05, "Laptop business class": -0.07,
+    "Cloud hosting subscription": -0.03, "Security guard shift": 0.08, "Housekeeping services": 0.06,
+    "Consulting day rate": 0.05, "Deep groove bearing 6205": 0.0, "Video production": -0.04,
+}
+
 # Messy variants of the same supplier, the kind real ERPs are full of.
 SUFFIXES = ["", " Pvt Ltd", " Private Limited", " Ltd.", " LLC", " Inc", " Co."]
 
@@ -127,8 +138,10 @@ def generate(rows: int = 4000, seed: int = 42) -> list[dict]:
     for n in range(rows):
         name, cat, _, level = rng.choices(suppliers, weights=pops, k=1)[0]
         item, unit, base_price, spec = rng.choice(ITEMS[cat])
-        d = start + timedelta(days=rng.randint(0, 364))
-        price = round(base_price * level * rng.uniform(0.96, 1.04), 2)
+        day = rng.randint(0, 364)
+        d = start + timedelta(days=day)
+        drift = (1 + ITEM_DRIFT.get(item, DEFAULT_DRIFT)) ** (day / 365)
+        price = round(base_price * level * drift * rng.uniform(0.96, 1.04), 2)
         target = rng.lognormvariate(9.2, 1.1)
         qty = max(1, round(target / price))
         has_po = rng.random() > (0.28 if "Vendor" in name else 0.12)

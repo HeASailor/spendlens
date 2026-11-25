@@ -6,6 +6,7 @@ from html import escape
 
 from . import __version__
 from .analyze import Analysis
+from .trend import MIX_FLAG, MOVE_THRESHOLD
 
 
 UNITS = {"mode": "intl"}
@@ -135,6 +136,21 @@ def _dumbbell(items, width=560, row_h=40) -> str:
     return f'<svg viewBox="0 0 {width} {h}" role="img">{"".join(out)}</svg>'
 
 
+def _spark(values: list[float], rising: bool, width=130, height=34) -> str:
+    """Tiny unit-price line for one item. Rising price is red, falling is teal."""
+    if len(values) < 2:
+        return ""
+    lo, hi = min(values), max(values)
+    span = (hi - lo) or 1
+    step = (width - 8) / (len(values) - 1)
+    xy = [(4 + i * step, 4 + (height - 8) * (1 - (v - lo) / span)) for i, v in enumerate(values)]
+    col = "#f87171" if rising else "#2dd4bf"
+    pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in xy)
+    return (f'<svg viewBox="0 0 {width} {height}" role="img" style="width:{width}px">'
+            f'<polyline points="{pts}" fill="none" stroke="{col}" stroke-width="2" stroke-linejoin="round"/>'
+            f'<circle cx="{xy[-1][0]:.1f}" cy="{xy[-1][1]:.1f}" r="3" fill="{col}"/></svg>')
+
+
 def _kpi(label: str, value: str, sub: str = "", tone: str = "") -> str:
     return (f'<div class="kpi {tone}"><div class="k">{escape(label)}</div>'
             f'<div class="v">{escape(value)}</div><div class="s">{escape(sub)}</div></div>')
@@ -219,7 +235,8 @@ def render(a: Analysis, title: str = "Spend Analysis") -> str:
             for r in a.review_rows) or "<tr><td colspan=3>Nothing low-confidence. Nice.</td></tr>"
         class_card = f"""<div class="grid c2" style="margin-top:16px">
  <div class="card"><h2>Category coverage</h2>
-  <div class="hint">{a.classified_pct:.0f}% of spend has a category; SpendLens filled in {a.auto_classified_pct:.0f}%.</div>
+  <div class="hint">{a.classified_pct:.0f}% of spend has a category; SpendLens filled in {a.auto_classified_pct:.0f}%.
+   Working from the {escape(a.taxonomy_label)}.</div>
   {_stack(parts)}
   <table style="margin-top:14px"><tr><th>Source</th><th class="n">Invoices</th><th class="n">Spend</th></tr>{src_rows}</table></div>
  <div class="card"><h2>Auto-classified, worth a second look</h2>
@@ -246,6 +263,31 @@ def render(a: Analysis, title: str = "Spend Analysis") -> str:
   <table><tr><th>Item</th><th class="n">Price range</th><th class="n">Gap</th></tr>{prows}</table></div>
 </div>"""
 
+    trend_card = ""
+    if a.trend_items:
+        top = a.trend_items[:8]
+        up = sum(1 for t in a.trend_items if t.change_pct >= MOVE_THRESHOLD)
+        down = sum(1 for t in a.trend_items if t.change_pct <= -MOVE_THRESHOLD)
+        trows = ""
+        for t in top:
+            gap = t.mix_gap
+            note = (f"<span class='tag'>mix: all-supplier avg {t.raw_change_pct:+.0f}%</span>"
+                    if gap is not None and abs(gap) >= MIX_FLAG else
+                    "<span class='tag'>no supplier in both windows</span>" if gap is None else "")
+            tone = "hi" if t.change_pct >= MOVE_THRESHOLD else "lo" if t.change_pct <= -MOVE_THRESHOLD else ""
+            trows += (f"<tr><td>{escape(t.item)}<br><span class='tag'>{escape(t.category)}</span>{note}</td>"
+                      f"<td>{_spark([p[1] for p in t.periods], t.change_pct > 0)}</td>"
+                      f"<td class='n'>{money(t.early_price)} to {money(t.late_price)}</td>"
+                      f"<td class='n'><span class='pill {tone}'>{t.change_pct:+.1f}%</span></td></tr>")
+        unit = "quarter" if a.trend_period == "quarter" else "month"
+        ref = top[0]
+        trend_card = f"""<div class="card" style="margin-top:16px"><h2>Price trend per item</h2>
+  <div class="hint">{up} items up and {down} down by {MOVE_THRESHOLD:.0f}% or more, across {len(a.trend_items)} items
+   ({a.trend_covered_pct:.0f}% of spend). Unit price by {unit}, early window ({ref.early_span}) against late window
+   ({ref.late_span}). The change is like-for-like per supplier where possible, so a switch between a cheap and a
+   dear supplier does not read as a price move. Ranked by cost impact.</div>
+  <table><tr><th>Item</th><th>Unit price by {unit}</th><th class="n">Early to late</th><th class="n">Change</th></tr>{trows}</table></div>"""
+
     sav_rows = "".join(
         f"<tr><td>{escape(k)}</td><td class='n'>{money(v)}</td></tr>" for k, v in a.savings.items())
 
@@ -260,7 +302,7 @@ def render(a: Analysis, title: str = "Spend Analysis") -> str:
  <div class="card"><h2>Spend by category</h2>{_donut(a.categories)}</div>
  <div class="card"><h2>Monthly spend</h2>{_line(a.monthly)}</div>
 </div>
-{class_card}{price_card}
+{class_card}{price_card}{trend_card}
 <div class="grid c2" style="margin-top:16px">
  <div class="card"><h2>Top suppliers (after merging duplicates)</h2>
   <table><tr><th>Supplier</th><th class="n">Spend</th><th class="n">Cumul.</th></tr>{sup_rows}</table></div>

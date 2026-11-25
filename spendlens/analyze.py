@@ -8,7 +8,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-from .classify import classify_rows
+from .classify import TAXONOMY, classify_rows
+from .trend import has_dates, price_trend
 from .variance import has_price_columns, price_variance
 
 REQUIRED = {"supplier", "amount"}
@@ -59,6 +60,10 @@ class Analysis:
     price_items: list = field(default_factory=list)          # ItemVariance, biggest gap first
     price_gap_total: float = 0.0
     price_covered_pct: float = 0.0
+    taxonomy_label: str = ""                                 # what the classifier worked from
+    trend_items: list = field(default_factory=list)          # ItemTrend, biggest cost impact first
+    trend_period: str = "month"
+    trend_covered_pct: float = 0.0
 
 
 def load(path: str) -> list[dict]:
@@ -127,7 +132,8 @@ def cluster_suppliers(names: list[str], threshold: float = 0.88) -> list[list[st
 
 def analyze(rows: list[dict], assumptions: dict | None = None,
             fuzzy_threshold: float = 0.88, classify: bool = True,
-            min_confidence: float = 0.0) -> Analysis:
+            min_confidence: float = 0.0, taxonomy: dict | None = None,
+            taxonomy_label: str = "", trend_period: str = "month") -> Analysis:
     a = Analysis()
     assume = {**DEFAULT_ASSUMPTIONS, **(assumptions or {})}
     if not rows:
@@ -159,7 +165,11 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
 
     # --- category auto-classification (fills blanks only, never overwrites)
     if classify:
-        a.classification = classify_rows(rows, canon_of, min_confidence=min_confidence)
+        a.classification = classify_rows(rows, canon_of, min_confidence=min_confidence,
+                                         taxonomy=taxonomy)
+        a.taxonomy_label = taxonomy_label or (
+            f"built-in taxonomy: {len(TAXONOMY)} categories" if taxonomy is None
+            else f"custom taxonomy: {len(taxonomy)} categories")
         filled = a.classification["keyword"]["spend"] + a.classification["supplier"]["spend"]
         a.auto_classified_pct = filled / a.total_spend * 100
         a.classified_pct = 100 - a.classification["none"]["spend"] / a.total_spend * 100
@@ -223,6 +233,12 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
         a.price_items, covered = price_variance(rows, canon_of)
         a.price_gap_total = sum(i.gap_value for i in a.price_items)
         a.price_covered_pct = covered / a.total_spend * 100
+
+    # --- price trend over time per item (needs dates and prices)
+    if has_price_columns(rows) and has_dates(rows):
+        a.trend_period = trend_period
+        a.trend_items, covered = price_trend(rows, canon_of, trend_period)
+        a.trend_covered_pct = covered / a.total_spend * 100
 
     # --- savings (illustrative)
     a.savings = {
