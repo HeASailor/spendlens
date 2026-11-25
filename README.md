@@ -6,7 +6,7 @@
 
 No dependencies. No cloud. No data leaves your machine.
 
-![SpendLens report](docs/screenshot.png)
+![SpendLens report](docs/SpendLens-full-report.png)
 
 ## Why
 
