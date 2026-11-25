@@ -1,0 +1,11 @@
+category,keyword,weight
+# Splits two new categories out of MRO and IT. Your keywords add to the built-in list;
+# a keyword you repeat overrides its built-in weight. Weight 1 (weak) to 5 (decisive), default 3.
+Safety & PPE,glove,4
+Safety & PPE,ppe,4
+Safety & PPE,safety,3
+Safety & PPE,helmet,4
+Cloud & Hosting,cloud,4
+Cloud & Hosting,hosting,4
+Cloud & Hosting,vcpu,3
+Packaging,gunny bag,2
