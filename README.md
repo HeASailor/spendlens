@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/HeASailor/spendlens/actions/workflows/ci.yml/badge.svg)](https://github.com/HeASailor/spendlens/actions/workflows/ci.yml) ![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white) ![Dependencies](https://img.shields.io/badge/dependencies-none-success) ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-**Procurement spend analytics in one command.** Point it at a spend CSV and get a single, self-contained HTML report: duplicate suppliers, Pareto and tail spend, maverick (no-PO) spend, category concentration, **auto-classified categories** (with your own category list if you have one), **price variance across suppliers**, **price trend per item** and an estimated savings opportunity.
+**Procurement spend analytics in one command.** Point it at a spend CSV and get a single, self-contained HTML report: duplicate suppliers, Pareto and tail spend, maverick (no-PO) spend, category concentration, **auto-classified categories** (with your own category list if you have one), **price variance across suppliers**, **price trend per item**, **contract coverage** and an estimated savings opportunity. The findings also export to **Excel**.
 
 No dependencies. No cloud. No data leaves your machine.
 
@@ -26,6 +26,9 @@ spendlens classify spend.csv -o classified.csv   # just fill in missing categori
 
 spendlens taxonomy -o my_categories.csv         # export the built-in category list, edit it
 spendlens analyze spend.csv --taxonomy my_categories.csv
+
+spendlens generate -o spend.csv --contracts contracts.csv      # demo spend and contract list
+spendlens analyze spend.csv --contracts contracts.csv --excel findings.xlsx
 ```
 
 Prefer not to install? `python -m spendlens analyze spend.csv` works from the repo root.
@@ -55,6 +58,7 @@ Rows with a missing supplier or a non-positive or unparseable amount are skipped
 - **Category auto-classification.** Blank categories are filled from supplier name, item and description. Pass one scores a weighted keyword taxonomy (8 categories) and abstains unless the winner has enough evidence and a clear margin. Pass two lets a still-blank row inherit its supplier's dominant category (60%+ of that supplier's spend). Categories you provide are never overwritten. Every guess gets a confidence score, and the report lists the weakest ones for review. Bring your own category list with `--taxonomy` (see below).
 - **Price variance.** For each item bought from two or more merged suppliers (3+ invoices each), SpendLens takes every supplier's volume-weighted average price, uses the cheapest as the benchmark and sizes the gap: what you paid above buying every unit at the best price you have already achieved. The benchmark ignores spec, incoterms and quality, so read it as a lead, not a verdict.
 - **Price trend per item.** For items with dated, priced invoices in at least 4 months (2+ invoices each), SpendLens builds a unit-price series and compares the first third of the periods with the last third. The headline change is **like-for-like**: only suppliers that sold the item in both windows, each compared with itself, weighted by late volume. That way moving volume from a cheap supplier to a dear one does not show up as a price rise. When the all-supplier average disagrees by 5 points or more, the report tags the item so you can see the mix effect. Items are ranked by cost impact, and `--trend-period quarter` is there for thinner data.
+- **Contract coverage.** With a contract list, each invoice is marked covered, outside contract dates or no contract. The report shows coverage, the top uncovered suppliers and contracts about to expire (see below).
 - **Savings opportunity.** Tail consolidation, maverick-to-PO and duplicate-merge levers, each with a configurable assumption. Price harmonisation (default 40% of the price gap closed) joins the three levers when price columns exist.
 
 > The savings figures are a **sizing exercise, not a forecast**. Defaults are 8% on tail spend, 5% on maverick spend and 3% on merged duplicates and 40% of the price gap. Levers can overlap, so read the total as an upper-end sizing. Replace them with your own benchmarks via `analyze(rows, assumptions={...})`.
@@ -62,10 +66,11 @@ Rows with a missing supplier or a non-positive or unparseable amount are skipped
 ## CLI
 
 ```
-spendlens generate [-o spend.csv] [-n 4000] [--seed 42]
+spendlens generate [-o spend.csv] [-n 4000] [--seed 42] [--contracts FILE]
 spendlens analyze  spend.csv [-o report.html] [--title "..."] [--units intl|indian] [--fuzzy 0.88]
                    [--no-classify] [--min-confidence 0.6]
                    [--taxonomy FILE] [--taxonomy-mode extend|replace] [--trend-period month|quarter]
+                   [--contracts FILE] [--excel FILE]
 spendlens classify spend.csv [-o classified.csv] [--min-confidence 0.6] [--overwrite]
                    [--taxonomy FILE] [--taxonomy-mode extend|replace]
 spendlens taxonomy [-o taxonomy.csv]
@@ -91,6 +96,46 @@ A JSON file works too: `{"Safety & PPE": ["glove", "helmet"], "Packaging": {"gun
 - **Weights** run from 1 (weak hint) to 5 (decisive), default 3. A category needs a score of 3 and a clear lead to win, so a single keyword at 3 or more is enough on its own.
 - **Matching.** A word matches a keyword if it starts with it, so `glove` also catches "gloves". Keywords under 4 characters must match the whole word, and multi-word keywords match as a phrase.
 - **Never overwrites.** Categories already in your spend file stay as they are. Your list only fills blanks, so a new category will look small until blanks are routed to it. Use `classify --overwrite` if you want existing rows re-labelled too.
+
+## Contract coverage
+
+Pass a contract list with `--contracts`. Start from `docs/sample_contracts.csv`:
+
+| column | required | notes |
+|---|---|---|
+| `supplier` | yes | matched to spend suppliers by the same name rules used to merge duplicates |
+| `start_date` | yes | `YYYY-MM-DD` |
+| `end_date` | yes | `YYYY-MM-DD`, the last day covered |
+| `category` | no | limits the contract to that category (case does not matter). Blank covers everything from the supplier |
+| `contract_id` | no | shown in the report and export |
+
+| status | meaning |
+|---|---|
+| covered | a contract in scope was live on the invoice date |
+| outside contract dates | the supplier has a contract in scope, but not live on that date |
+| no contract | nothing in your list for that supplier, or for that supplier and category |
+| undated | the supplier has a contract in scope, but the invoice date cannot be read |
+
+- **Expiring** means ending within 90 days of the latest invoice date in your file, not of today. Contracts with a follow-on contract of the same scope are left out.
+- **Check the names.** Contracts that match no supplier are listed. A badly shortened name in the spend file may not match, and will show as uncovered.
+- **Covered is not compliant.** It means a contract existed. Price, terms and volume are not checked.
+- Coverage is not added to the savings total, because it overlaps with no-PO spend.
+
+## Excel export
+
+`--excel findings.xlsx` writes the full lists behind the report, with filters and a frozen header row:
+
+| sheet | contents |
+|---|---|
+| Summary | headline numbers |
+| Duplicate suppliers | every name variant in each merged cluster |
+| Price gaps | every supplier price point for each compared item |
+| Price trends | every item with enough history |
+| Category review | every low-confidence category guess |
+| Contract coverage, Expiring contracts, Unmatched contracts | with `--contracts` (the last only if any are unmatched) |
+| Savings levers | assumptions are shaded cells; change them and the totals recalculate |
+
+No extra packages are needed. Amounts are plain numbers, whatever `--units` is set to.
 
 ## Use as a library
 
@@ -126,8 +171,10 @@ pytest
 - [x] Price-variance analysis across suppliers for the same item
 - [x] Custom taxonomy file for the classifier
 - [x] Price trend over time per item
-- [ ] Contract coverage view (spend vs. active contracts)
-- [ ] Excel export alongside HTML
+- [x] Contract coverage view (spend vs. active contracts)
+- [x] Excel export alongside HTML
+- [ ] Savings tracker, from identified opportunity to realised
+- [ ] Supplier scorecard
 
 ## How good is the classifier?
 
@@ -142,7 +189,7 @@ Honest numbers, with caveats. On the synthetic file it recovers the blanked cate
 
 ## About the data
 
-`docs/sample_spend.csv` is fully synthetic and seeded, so the screenshot is reproducible. Prices drift by an invented rate per item across the year so the trend view has something to find. It contains no real supplier, client or company data.
+`docs/sample_spend.csv` and `docs/sample_contracts.csv` are fully synthetic. The screenshot is built from these two files. Prices drift by an invented rate per item across the year so the trend view has something to find. They contain no real supplier, client or company data.
 
 ## License
 
