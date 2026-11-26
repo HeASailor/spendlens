@@ -7,7 +7,9 @@ import sys
 
 from . import __version__
 from .analyze import analyze, load
-from .generate import write_csv
+from .contracts import load_contracts
+from .export import export_xlsx
+from .generate import write_contracts, write_csv
 from . import report
 from .report import money, render
 from .trend import MOVE_THRESHOLD
@@ -68,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("-o", "--out", default="spend.csv")
     g.add_argument("-n", "--rows", type=int, default=4000)
     g.add_argument("--seed", type=int, default=42)
+    g.add_argument("--contracts", metavar="FILE", help="also write a synthetic contract list")
 
     a = sub.add_parser("analyze", help="analyze a spend CSV and write an HTML report")
     a.add_argument("csv")
@@ -85,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="add to the built-in categories (default) or use only your file")
     a.add_argument("--trend-period", choices=["month", "quarter"], default="month",
                    help="period for the price trend view (default: month)")
+    a.add_argument("--contracts", metavar="FILE", help="contract list CSV, adds the coverage view")
+    a.add_argument("--excel", metavar="FILE", help="also write the findings as an .xlsx workbook")
 
     c = sub.add_parser("classify", help="fill missing categories and write a new CSV")
     c.add_argument("csv")
@@ -102,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "generate":
         n = write_csv(args.out, args.rows, args.seed)
         print(f"Wrote {n:,} rows to {args.out}")
+        if args.contracts:
+            m = write_contracts(args.contracts, args.seed)
+            print(f"Wrote {m} contracts to {args.contracts}")
         return 0
 
     if args.cmd == "classify":
@@ -113,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         rows = load(args.csv)
         taxonomy, label = _taxonomy(args)
+        contracts = load_contracts(args.contracts) if args.contracts else None
     except (OSError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
@@ -123,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     report.UNITS["mode"] = args.units
     res = analyze(rows, fuzzy_threshold=args.fuzzy, classify=not args.no_classify,
                   min_confidence=args.min_confidence, taxonomy=taxonomy, taxonomy_label=label,
-                  trend_period=args.trend_period)
+                  trend_period=args.trend_period, contracts=contracts)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(render(res, args.title))
 
@@ -141,8 +150,21 @@ def main(argv: list[str] | None = None) -> int:
         down = sum(1 for t in res.trend_items if t.change_pct <= -MOVE_THRESHOLD)
         print(f"Price trend  {up} items up, {down} down by {MOVE_THRESHOLD:.0f}%+ "
               f"({len(res.trend_items)} items, by {res.trend_period})")
+    if res.contracts:
+        c = res.contracts
+        print(f"Contracts    {c.covered_pct:.0f}% of spend covered, {len(c.expiring)} expiring "
+              f"within {c.expiry_days} days")
+        if c.unmatched:
+            print(f"             {len(c.unmatched)} contract(s) matched no supplier in the spend file")
     print(f"Savings      ~{money(res.savings_total)} identified")
     print(f"Report       {args.out}")
+    if args.excel:
+        try:
+            names = export_xlsx(args.excel, res, args.title)
+        except OSError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"Excel        {args.excel} ({len(names)} sheets)")
     return 0
 
 

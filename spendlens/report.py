@@ -6,6 +6,7 @@ from html import escape
 
 from . import __version__
 from .analyze import Analysis
+from .contracts import COVERED, NONE, OUTSIDE, UNDATED
 from .trend import MIX_FLAG, MOVE_THRESHOLD
 
 
@@ -189,6 +190,50 @@ td,th{padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}td.
 """
 
 
+def _contracts(a: Analysis) -> str:
+    c = a.contracts
+    if not c:
+        return ""
+    parts = [("Covered", c.spend[COVERED], "#2dd4bf"),
+             ("Outside contract dates", c.spend[OUTSIDE], "#fbbf24"),
+             ("No contract", c.spend[NONE], "#f87171")]
+    if c.spend[UNDATED]:
+        parts.append(("Undated", c.spend[UNDATED], "#94a3b8"))
+    urows = "".join(
+        f"<tr><td>{escape(s.supplier)}</td><td class='n'>{money(s.outside)}</td>"
+        f"<td class='n'>{money(s.none)}</td><td class='n'>{money(s.uncovered)}</td></tr>"
+        for s in c.suppliers[:8] if s.uncovered > 0) or "<tr><td colspan=4>Everything is covered.</td></tr>"
+    erows = "".join(
+        f"<tr><td>{escape(sup)}<br><span class='tag'>{escape(k.contract_id or 'no ID')}</span></td>"
+        f"<td class='n'>{k.end.isoformat()}</td>"
+        f"<td class='n'><span class='pill {'hi' if days <= 30 else 'md'}'>{days} days</span></td>"
+        f"<td class='n'>{money(spend)}</td></tr>"
+        for k, sup, days, spend in c.expiring[:8]) or (
+        f"<tr><td colspan=4>None in the next {c.expiry_days} days.</td></tr>")
+    notes = []
+    if len(c.expiring) > 8:
+        notes.append(f"{len(c.expiring) - 8} more expiring contracts are in the Excel export.")
+    if c.unmatched:
+        names = ", ".join(escape(k.supplier) for k in c.unmatched[:4])
+        notes.append(f"{len(c.unmatched)} contract(s) matched no supplier in the spend file "
+                     f"({names}{', ...' if len(c.unmatched) > 4 else ''}). Check the names.")
+    note = "".join(f"<div class='hint' style='margin-top:10px'>{n}</div>" for n in notes)
+    as_of = c.as_of.isoformat() if c.as_of else "n/a"
+    return f"""<div class="grid c2" style="margin-top:16px">
+ <div class="card"><h2>Contract coverage</h2>
+  <div class="big" style="font-size:30px">{c.covered_pct:.0f}%</div>
+  <div class="hint">of spend was with a supplier under a live contract on the invoice date
+   ({c.contracts} contracts). Covered does not mean the price or terms were followed.</div>
+  {_stack(parts)}
+  <table style="margin-top:14px"><tr><th>Top uncovered suppliers</th><th class="n">Outside dates</th>
+   <th class="n">No contract</th><th class="n">Total</th></tr>{urows}</table></div>
+ <div class="card"><h2>Contracts expiring within {c.expiry_days} days</h2>
+  <div class="hint">Counted from the latest invoice date ({as_of}).</div>
+  <table><tr><th>Supplier</th><th class="n">Ends</th><th class="n">Left</th>
+   <th class="n">Spend under it</th></tr>{erows}</table>{note}</div>
+</div>"""
+
+
 def render(a: Analysis, title: str = "Spend Analysis") -> str:
     dup_pct = (1 - a.unique_suppliers / a.supplier_records) * 100 if a.supplier_records else 0
     tail_pct = a.tail_spend / a.total_spend * 100 if a.total_spend else 0
@@ -288,6 +333,8 @@ def render(a: Analysis, title: str = "Spend Analysis") -> str:
    dear supplier does not read as a price move. Ranked by cost impact.</div>
   <table><tr><th>Item</th><th>Unit price by {unit}</th><th class="n">Early to late</th><th class="n">Change</th></tr>{trows}</table></div>"""
 
+    contract_card = _contracts(a)
+
     sav_rows = "".join(
         f"<tr><td>{escape(k)}</td><td class='n'>{money(v)}</td></tr>" for k, v in a.savings.items())
 
@@ -302,7 +349,7 @@ def render(a: Analysis, title: str = "Spend Analysis") -> str:
  <div class="card"><h2>Spend by category</h2>{_donut(a.categories)}</div>
  <div class="card"><h2>Monthly spend</h2>{_line(a.monthly)}</div>
 </div>
-{class_card}{price_card}{trend_card}
+{class_card}{price_card}{trend_card}{contract_card}
 <div class="grid c2" style="margin-top:16px">
  <div class="card"><h2>Top suppliers (after merging duplicates)</h2>
   <table><tr><th>Supplier</th><th class="n">Spend</th><th class="n">Cumul.</th></tr>{sup_rows}</table></div>

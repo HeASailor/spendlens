@@ -125,7 +125,7 @@ def generate(rows: int = 4000, seed: int = 42) -> list[dict]:
             variants = {base}
             for _ in range(rng.choice([0, 1, 1, 2])):
                 variants.add(_variant(base, rng))
-            for v in variants:
+            for v in sorted(variants):   # set order varies between runs
                 suppliers.append((v, cat, pop / len(variants), level))
         # long tail of one-off suppliers (pricier: no volume leverage)
         for t in range(rng.randint(8, 22)):
@@ -167,6 +167,41 @@ def write_csv(path: str, rows: int = 4000, seed: int = 42) -> int:
     data = generate(rows, seed)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(data)
+    return len(data)
+
+
+CONTRACT_FIELDS = ["contract_id", "supplier", "category", "start_date", "end_date"]
+
+# (start, end) patterns: live all year, lapsed mid-year, signed mid-year, ending soon after year end
+CONTRACT_TERMS = [
+    (date(2024, 4, 1), date(2027, 3, 31)),
+    (date(2024, 7, 1), date(2025, 6, 30)),
+    (date(2025, 5, 1), date(2027, 4, 30)),
+    (date(2024, 3, 1), date(2026, 2, 28)),
+]
+
+
+def contracts(seed: int = 42) -> list[dict]:
+    """Synthetic contract list for the demo. Some named suppliers get none; the tail never does."""
+    rng = random.Random(seed + 1)   # separate stream, so the spend data stays unchanged
+    out = []
+    for cat, names in CATEGORIES.items():
+        for i, name in enumerate(names):
+            if i > 0 and rng.random() < 0.3:
+                continue
+            start, end = rng.choice(CONTRACT_TERMS)
+            out.append({"contract_id": f"CT-{2000 + len(out)}", "supplier": name,
+                        "category": cat if rng.random() < 0.25 else "",
+                        "start_date": start.isoformat(), "end_date": end.isoformat()})
+    return out
+
+
+def write_contracts(path: str, seed: int = 42) -> int:
+    data = contracts(seed)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CONTRACT_FIELDS)
         w.writeheader()
         w.writerows(data)
     return len(data)

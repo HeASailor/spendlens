@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import csv
-import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 
 from .classify import TAXONOMY, classify_rows
+from .contracts import Contract, Coverage, contract_coverage
+from .names import name_similarity, normalize_name
 from .trend import has_dates, price_trend
 from .variance import has_price_columns, price_variance
 
 REQUIRED = {"supplier", "amount"}
-LEGAL_SUFFIXES = {
-    "pvt", "ltd", "private", "limited", "inc", "incorporated", "llc", "llp",
-    "gmbh", "co", "corp", "corporation", "company", "plc", "sa", "bv", "ag",
-}
-
 # Illustrative savings assumptions. Tune these to your own benchmarks.
 DEFAULT_ASSUMPTIONS = {
     "tail_consolidation": 0.08,   # savings on tail spend moved to preferred suppliers
@@ -25,12 +20,6 @@ DEFAULT_ASSUMPTIONS = {
     "duplicate_merge": 0.03,      # volume leverage from merging duplicate supplier records
     "price_harmonisation": 0.40,  # share of the gap to the best price already paid that you close
 }
-
-
-def normalize_name(name: str) -> str:
-    s = re.sub(r"[^a-z0-9 ]", " ", name.lower())
-    tokens = [t for t in s.split() if t not in LEGAL_SUFFIXES]
-    return " ".join(tokens)
 
 
 @dataclass
@@ -64,6 +53,9 @@ class Analysis:
     trend_items: list = field(default_factory=list)          # ItemTrend, biggest cost impact first
     trend_period: str = "month"
     trend_covered_pct: float = 0.0
+    review_all: list = field(default_factory=list)           # every low-confidence guess, biggest first
+    contracts: Coverage | None = None                        # set when a contract list is given
+    savings_levers: list = field(default_factory=list)       # (name, spend it applies to, assumption)
 
 
 def load(path: str) -> list[dict]:
@@ -114,14 +106,7 @@ def cluster_suppliers(names: list[str], threshold: float = 0.88) -> list[list[st
     keys = sorted(by_norm)
     for i, a in enumerate(keys):
         for b in keys[i + 1:]:
-            if abs(len(a) - len(b)) > 6:
-                continue
-            if a[:2] != b[:2]:
-                continue
-            # names that differ in their numbers are different entities
-            if re.findall(r"\d+", a) != re.findall(r"\d+", b):
-                continue
-            if SequenceMatcher(None, a, b).ratio() >= threshold:
+            if name_similarity(a, b) >= threshold:
                 union(by_norm[a][0], by_norm[b][0])
 
     groups = defaultdict(list)
@@ -133,7 +118,8 @@ def cluster_suppliers(names: list[str], threshold: float = 0.88) -> list[list[st
 def analyze(rows: list[dict], assumptions: dict | None = None,
             fuzzy_threshold: float = 0.88, classify: bool = True,
             min_confidence: float = 0.0, taxonomy: dict | None = None,
-            taxonomy_label: str = "", trend_period: str = "month") -> Analysis:
+            taxonomy_label: str = "", trend_period: str = "month",
+            contracts: list[Contract] | None = None) -> Analysis:
     a = Analysis()
     assume = {**DEFAULT_ASSUMPTIONS, **(assumptions or {})}
     if not rows:
@@ -173,10 +159,11 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
         filled = a.classification["keyword"]["spend"] + a.classification["supplier"]["spend"]
         a.auto_classified_pct = filled / a.total_spend * 100
         a.classified_pct = 100 - a.classification["none"]["spend"] / a.total_spend * 100
-        a.review_rows = sorted(
+        a.review_all = sorted(
             (r for r in rows if r["category_source"] != "given" and r["category"]
              and r["category_conf"] < 0.65),
-            key=lambda r: -r["amount"])[:6]
+            key=lambda r: -r["amount"])
+        a.review_rows = a.review_all[:6]
 
     # --- pareto + tail
     ranked = sorted(spend_by_supplier.items(), key=lambda kv: -kv[1])
@@ -240,13 +227,19 @@ def analyze(rows: list[dict], assumptions: dict | None = None,
         a.trend_items, covered = price_trend(rows, canon_of, trend_period)
         a.trend_covered_pct = covered / a.total_spend * 100
 
-    # --- savings (illustrative)
-    a.savings = {
-        "Tail spend consolidation": a.tail_spend * assume["tail_consolidation"],
-        "Maverick spend onto PO/contract": a.maverick_spend * assume["maverick_to_po"],
-        "Duplicate supplier merge": a.duplicate_spend * assume["duplicate_merge"],
-    }
+    # --- contract coverage (uses categories as filled in above)
+    if contracts:
+        a.contracts = contract_coverage(rows, canon_of, contracts, fuzzy_threshold)
+
+    # --- savings (illustrative). Contract coverage is left out: it overlaps with no-PO spend.
+    a.savings_levers = [
+        ("Tail spend consolidation", a.tail_spend, assume["tail_consolidation"]),
+        ("Maverick spend onto PO/contract", a.maverick_spend, assume["maverick_to_po"]),
+        ("Duplicate supplier merge", a.duplicate_spend, assume["duplicate_merge"]),
+    ]
     if a.price_items:
-        a.savings["Price harmonisation"] = a.price_gap_total * assume["price_harmonisation"]
+        a.savings_levers.append(
+            ("Price harmonisation", a.price_gap_total, assume["price_harmonisation"]))
+    a.savings = {name: base * rate for name, base, rate in a.savings_levers}
     a.savings_total = sum(a.savings.values())
     return a
